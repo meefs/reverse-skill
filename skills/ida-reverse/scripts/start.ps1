@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
 Start IDA Pro MCP HTTP server (background, non-blocking)
 
@@ -17,23 +17,61 @@ param(
     [string]$ServerPath
 )
 
+function Get-InstalledIdaDir {
+    $registryPaths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+
+    $fromRegistry = $registryPaths |
+        ForEach-Object {
+            Get-ItemProperty $_ -ErrorAction SilentlyContinue
+        } |
+        Where-Object {
+            ($_.DisplayName -match 'IDA|Hex-Rays') -and
+            -not [string]::IsNullOrWhiteSpace($_.InstallLocation) -and
+            (Test-Path -LiteralPath $_.InstallLocation)
+        } |
+        Select-Object -ExpandProperty InstallLocation -First 1
+
+    if ($fromRegistry) {
+        return $fromRegistry
+    }
+
+    $idaCandidates = @(
+        'C:\Program Files\IDA Pro',
+        'C:\Program Files\IDA',
+        'C:\IDA Pro',
+        'C:\IDA',
+        'D:\IDA',
+        'E:\Program Files\IDA',
+        (Join-Path $env:USERPROFILE 'Tools\IDA')
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    return $idaCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+
 if ([string]::IsNullOrWhiteSpace($IdaDir)) {
     if (-not [string]::IsNullOrWhiteSpace($env:IDADIR)) {
         $IdaDir = $env:IDADIR
     } else {
-        # Search common IDA installation paths
-        $idaCandidates = @(
-            'C:\Program Files\IDA Pro',
-            'C:\IDA Pro',
-            'D:\IDA',
-            (Join-Path $env:USERPROFILE 'Tools\IDA')
-        )
-        $foundIda = $idaCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        if ($foundIda) {
-            $IdaDir = $foundIda
+        $persistedIdaDir = [Environment]::GetEnvironmentVariable('IDADIR', 'User')
+        if ([string]::IsNullOrWhiteSpace($persistedIdaDir)) {
+            $persistedIdaDir = [Environment]::GetEnvironmentVariable('IDADIR', 'Machine')
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($persistedIdaDir) -and (Test-Path -LiteralPath $persistedIdaDir)) {
+            $IdaDir = $persistedIdaDir
         } else {
-            Write-Output "ERR:IDADIR not set and IDA Pro not found. Set IDADIR environment variable."
-            exit 1
+            # Search registry install records and common fallback paths
+            $foundIda = Get-InstalledIdaDir
+            if ($foundIda) {
+                $IdaDir = $foundIda
+            } else {
+                Write-Output "ERR:IDADIR not set and IDA Pro not found. Set IDADIR environment variable."
+                exit 1
+            }
         }
     }
 }
@@ -69,7 +107,7 @@ if ([string]::IsNullOrWhiteSpace($ServerPath)) {
 if ([string]::IsNullOrWhiteSpace($ServerPath)) {
     $bootstrapScript = Join-Path $PSScriptRoot '..\..\scripts\bootstrap-reverse.ps1'
     if (Test-Path -LiteralPath $bootstrapScript) {
-        Write-Output "INFO: ida-pro-mcp not found, attempting auto-bootstrap (pip install ida-mcp)..."
+        Write-Output "INFO: ida-pro-mcp not found, attempting auto-bootstrap (installing mrexodia/ida-pro-mcp)..."
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $bootstrapScript -Capability @('idalib-mcp') -SkipRefresh
         $resolved = Get-Command ida-pro-mcp -ErrorAction SilentlyContinue
         if (-not $resolved) {
